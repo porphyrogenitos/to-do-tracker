@@ -2,17 +2,46 @@ import sys
 import json
 import os
 import re
+import csv
 from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QTableWidget,
                              QTableWidgetItem, QVBoxLayout, QPushButton,
                              QWidget, QTextEdit, QHeaderView, QHBoxLayout,
                              QMenu, QAction, QInputDialog, QDialog, 
                              QCalendarWidget, QStyledItemDelegate, QCheckBox,
-                             QAbstractItemView, QTabWidget, QComboBox, QMessageBox)
+                             QAbstractItemView, QTabWidget, QComboBox, QMessageBox,
+                             QFileDialog)
 from PyQt5.QtGui import (QDesktopServices, QTextCursor, QColor, QFont, 
                            QKeySequence, QTextCharFormat, QBrush, QTextListFormat,
                            QTextBlockFormat)
 from PyQt5.QtCore import QUrl, Qt, QDate
+
+# Helper function to convert Qt Rich Text / HTML into clean plain text for CSV/Excel export
+def html_to_clean_text(html_str):
+    if not html_str or not isinstance(html_str, str):
+        return ""
+    
+    text = html_str
+    # 1. Strip out head and style blocks completely
+    text = re.sub(r'<head.*?>.*?</head>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<style.*?>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
+
+    # 2. Convert HTML list items to visible bullet markers
+    text = re.sub(r'<li[^>]*>', '• ', text)
+    text = re.sub(r'</li>', '\n', text)
+
+    # 3. Convert paragraph endings and line breaks to standard newlines
+    text = re.sub(r'</p>|<br\s*/?>', '\n', text)
+
+    # 4. Strip away all remaining HTML tags
+    text = re.sub(r'<[^>]+>', '', text)
+
+    # 5. Unescape common HTML entities
+    text = text.replace('&nbsp;', ' ').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
+
+    # Strip trailing/leading empty space while preserving text linebreaks
+    lines = [line.strip() for line in text.split('\n')]
+    return '\n'.join([l for l in lines if l]).strip()
 
 # Custom Widget to center the checkbox inside table cells
 class CenteredCheckBox(QWidget):
@@ -480,10 +509,16 @@ class TodoApp(QMainWindow):
         self.save_btn.clicked.connect(self.save_data)
         btn_layout.addWidget(self.save_btn)
 
-        # Stretch spacing to push Backup button to far right
+        # Stretch spacing to push Export and Backup buttons to far right
         btn_layout.addStretch()
 
-        # Right-aligned, narrower Backup button
+        # Right-aligned export and backup buttons
+        self.export_btn = QPushButton("Export to CSV")
+        self.export_btn.setStyleSheet("padding: 8px; font-weight: bold; background-color: #e1bee7; color: #000000;")
+        self.export_btn.setFixedWidth(120)
+        self.export_btn.clicked.connect(self.export_to_csv)
+        btn_layout.addWidget(self.export_btn)
+
         self.backup_btn = QPushButton("Save Back-up")
         self.backup_btn.setStyleSheet("padding: 8px; font-weight: bold; background-color: #bbdefb; color: #000000;")
         self.backup_btn.setFixedWidth(120)
@@ -702,6 +737,7 @@ class TodoApp(QMainWindow):
         for col, header_name in enumerate(self.headers):
             if header_name in ["Tasks/Subtasks", "Updates/Comments"]:
                 widget = table.cellWidget(row, col)
+                # Store full HTML so all bold, italics, bullets, and links reload natively in PyQt
                 row_data[header_name] = widget.toHtml() if widget else ""
             
             elif header_name == "Completed?":
@@ -735,7 +771,7 @@ class TodoApp(QMainWindow):
             data["archive"].append(self.get_row_data(self.archive_table, row))
 
         with open(self.data_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=4)
+            json.dump(data, f, indent=4, ensure_ascii=False)
 
     def save_backup(self):
         self.save_data()
@@ -752,9 +788,43 @@ class TodoApp(QMainWindow):
         }
         
         with open(backup_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=4)
+            json.dump(data, f, indent=4, ensure_ascii=False)
             
         QMessageBox.information(self, "Backup Saved", f"Backup created successfully:\n{backup_file}")
+
+    def export_to_csv(self):
+        file_path, _ = QFileDialog.getSaveFileName(self, "Export to CSV", self.app_dir, "CSV Files (*.csv)")
+        if not file_path:
+            return
+
+        with open(file_path, 'w', newline='', encoding='utf-8-sig') as f:
+            writer = csv.writer(f)
+            # Write column headers with an extra column indicating status
+            writer.writerow(self.headers + ["Status"])
+            
+            # Export active tasks (cleaning HTML specifically for CSV/Excel)
+            for row in range(self.todo_table.rowCount()):
+                data = self.get_row_data(self.todo_table, row)
+                row_vals = []
+                for h in self.headers:
+                    val = data.get(h, "")
+                    if h in ["Tasks/Subtasks", "Updates/Comments"]:
+                        val = html_to_clean_text(val)
+                    row_vals.append(val)
+                writer.writerow(row_vals + ["To-Do"])
+
+            # Export archived tasks
+            for row in range(self.archive_table.rowCount()):
+                data = self.get_row_data(self.archive_table, row)
+                row_vals = []
+                for h in self.headers:
+                    val = data.get(h, "")
+                    if h in ["Tasks/Subtasks", "Updates/Comments"]:
+                        val = html_to_clean_text(val)
+                    row_vals.append(val)
+                writer.writerow(row_vals + ["Archived"])
+
+        QMessageBox.information(self, "Export Complete", f"Data exported successfully to CSV:\n{file_path}")
 
     def load_data(self):
         if os.path.exists(self.data_file):
