@@ -2,12 +2,13 @@ import sys
 import json
 import os
 import re
+from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QTableWidget,
                              QTableWidgetItem, QVBoxLayout, QPushButton,
                              QWidget, QTextEdit, QHeaderView, QHBoxLayout,
                              QMenu, QAction, QInputDialog, QDialog, 
                              QCalendarWidget, QStyledItemDelegate, QCheckBox,
-                             QAbstractItemView, QTabWidget, QComboBox)
+                             QAbstractItemView, QTabWidget, QComboBox, QMessageBox)
 from PyQt5.QtGui import (QDesktopServices, QTextCursor, QColor, QFont, 
                            QKeySequence, QTextCharFormat, QBrush, QTextListFormat,
                            QTextBlockFormat)
@@ -175,7 +176,7 @@ class HyperlinkTextEdit(QTextEdit):
                         if current_indent > 1:
                             self.create_bullet_list(level=1)
                         else:
-                            # Remove block from list, reset margins, and clear line text without deleting the line break
+                            # Remove block from list, reset margins, and clear line text without deleting line break
                             current_list.remove(block)
                             block_fmt = cursor.blockFormat()
                             block_fmt.setObjectIndex(-1)
@@ -305,11 +306,6 @@ class HyperlinkTextEdit(QTextEdit):
         super().mouseReleaseEvent(event)
 
     def contextMenuEvent(self, event):
-        if self.isReadOnly():
-            menu = self.createStandardContextMenu()
-            menu.exec_(event.globalPos())
-            return
-            
         menu = self.createStandardContextMenu()
         menu.setStyleSheet("""
             QMenu { background-color: #2b2b2b; color: #ffffff; border: 1px solid #555555; font-family: 'Segoe UI'; }
@@ -319,9 +315,10 @@ class HyperlinkTextEdit(QTextEdit):
         
         menu.addSeparator()
 
-        insert_link_action = QAction("Insert Link...", self)
-        insert_link_action.triggered.connect(self.prompt_insert_link)
-        menu.addAction(insert_link_action)
+        if not self.isReadOnly():
+            insert_link_action = QAction("Insert Link...", self)
+            insert_link_action.triggered.connect(self.prompt_insert_link)
+            menu.addAction(insert_link_action)
 
         delete_action = QAction("Delete Row", self)
         delete_action.triggered.connect(self.delete_this_row)
@@ -352,7 +349,15 @@ class TodoApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("To-Do Tracker")
-        self.data_file = "todo_data.json"
+        
+        # Ensure json saves next to executable or script
+        if getattr(sys, 'frozen', False):
+            app_dir = os.path.dirname(sys.executable)
+        else:
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+            
+        self.data_file = os.path.join(app_dir, "todo_data.json")
+        self.app_dir = app_dir
         
         self.headers = [
             "Category", "Tasks/Subtasks", "Priority", 
@@ -362,15 +367,14 @@ class TodoApp(QMainWindow):
         self.init_ui()
         self.load_data()
         
-        # Calculate exact width needed and trim the excess padding
+        # Calculate exact width needed and trim excess padding
         header_width = self.todo_table.verticalHeader().width() if self.todo_table.verticalHeader().isVisible() else 30
         columns_width = sum(self.todo_table.columnWidth(i) for i in range(self.todo_table.columnCount()))
         
-        # Reduced safety margin to 12px for an exact fit
         required_width = columns_width + header_width + 25
         
         self.resize(required_width, 650)
-        self.setMinimumWidth(required_width) # Prevents the window from shrinking past content
+        self.setMinimumWidth(required_width)
 
     def init_ui(self):
         self.tabs = QTabWidget()
@@ -460,6 +464,7 @@ class TodoApp(QMainWindow):
 
         btn_layout = QHBoxLayout()
         
+        # Left-aligned action buttons
         self.add_btn = QPushButton("+ Add New Task")
         self.add_btn.setStyleSheet("padding: 8px; font-weight: bold; background-color: #dcedc8; color: #000000;")
         self.add_btn.clicked.connect(lambda: self.add_row(self.todo_table, is_archive=False))
@@ -475,11 +480,25 @@ class TodoApp(QMainWindow):
         self.save_btn.clicked.connect(self.save_data)
         btn_layout.addWidget(self.save_btn)
 
+        # Stretch spacing to push Backup button to far right
+        btn_layout.addStretch()
+
+        # Right-aligned, narrower Backup button
+        self.backup_btn = QPushButton("Save Back-up")
+        self.backup_btn.setStyleSheet("padding: 8px; font-weight: bold; background-color: #bbdefb; color: #000000;")
+        self.backup_btn.setFixedWidth(120)
+        self.backup_btn.clicked.connect(self.save_backup)
+        btn_layout.addWidget(self.backup_btn)
+
         layout.addLayout(btn_layout)
 
     def setup_archive_tab(self):
         layout = QVBoxLayout(self.archive_tab)
         self.archive_table = self.create_table(is_archive=True)
+        
+        self.archive_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.archive_table.customContextMenuRequested.connect(self.open_context_menu)
+        
         layout.addWidget(self.archive_table)
 
     def add_row(self, table, row_data=None, is_archive=False):
@@ -655,9 +674,15 @@ class TodoApp(QMainWindow):
             self.todo_table.blockSignals(False)
 
     def open_context_menu(self, position):
-        row = self.todo_table.rowAt(position.y())
+        table = self.sender()
+        if not isinstance(table, QTableWidget):
+            table = self.todo_table
+
+        row = table.rowAt(position.y())
+        if row < 0:
+            return
+
         menu = QMenu(self)
-        
         menu.setStyleSheet("""
             QMenu { background-color: #2b2b2b; color: #ffffff; border: 1px solid #555555; font-family: 'Segoe UI'; }
             QMenu::item { padding: 6px 20px; }
@@ -667,10 +692,10 @@ class TodoApp(QMainWindow):
         delete_action = QAction("Delete Row", self)
         menu.addAction(delete_action)
 
-        action = menu.exec_(self.todo_table.viewport().mapToGlobal(position))
+        action = menu.exec_(table.viewport().mapToGlobal(position))
 
-        if action == delete_action and row >= 0:
-            self.todo_table.removeRow(row)
+        if action == delete_action:
+            table.removeRow(row)
 
     def get_row_data(self, table, row):
         row_data = {"row_height": table.rowHeight(row)}
@@ -711,6 +736,25 @@ class TodoApp(QMainWindow):
 
         with open(self.data_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4)
+
+    def save_backup(self):
+        self.save_data()
+        
+        backup_dir = os.path.join(self.app_dir, "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        backup_file = os.path.join(backup_dir, f"todo_data_backup_{timestamp}.json")
+        
+        data = {
+            "todo": [self.get_row_data(self.todo_table, r) for r in range(self.todo_table.rowCount())],
+            "archive": [self.get_row_data(self.archive_table, r) for r in range(self.archive_table.rowCount())]
+        }
+        
+        with open(backup_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4)
+            
+        QMessageBox.information(self, "Backup Saved", f"Backup created successfully:\n{backup_file}")
 
     def load_data(self):
         if os.path.exists(self.data_file):
