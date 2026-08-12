@@ -3,17 +3,18 @@ import json
 import os
 import re
 import csv
+import ctypes
 from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QTableWidget,
                              QTableWidgetItem, QVBoxLayout, QPushButton,
                              QWidget, QTextEdit, QHeaderView, QHBoxLayout,
                              QMenu, QAction, QInputDialog, QDialog, 
-                             QCalendarWidget, QStyledItemDelegate, QCheckBox,
+                             QCalendarWidget, QStyledItemDelegate,
                              QAbstractItemView, QTabWidget, QComboBox, QMessageBox,
-                             QFileDialog)
+                             QFileDialog, QFrame)
 from PyQt5.QtGui import (QDesktopServices, QTextCursor, QColor, QFont, 
                            QKeySequence, QTextCharFormat, QBrush, QTextListFormat,
-                           QTextBlockFormat)
+                           QTextBlockFormat, QPalette)
 from PyQt5.QtCore import QUrl, Qt, QDate
 
 # Helper function to convert Qt Rich Text / HTML into clean plain text for CSV/Excel export
@@ -43,30 +44,72 @@ def html_to_clean_text(html_str):
     lines = [line.strip() for line in text.split('\n')]
     return '\n'.join([l for l in lines if l]).strip()
 
-# Custom Widget to center the checkbox inside table cells
+# Custom Widget using a checkable button with square corners and a dark green checked interior
 class CenteredCheckBox(QWidget):
     def __init__(self, parent=None, checked=False, on_change=None, read_only=False):
         super().__init__(parent)
-        self.checkbox = QCheckBox()
-        self.checkbox.setChecked(checked)
+        self.button = QPushButton()
+        self.button.setCheckable(True)
+        self.button.setChecked(checked)
+        self.update_button_appearance(checked)
         
         if read_only:
-            self.checkbox.setEnabled(False) # Prevents user from toggling archive checks
+            self.button.setEnabled(False)
             
+        self.button.clicked.connect(self._on_clicked)
+        
         layout = QHBoxLayout(self)
-        layout.addWidget(self.checkbox)
+        layout.addWidget(self.button)
         layout.setAlignment(Qt.AlignCenter)
         layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(layout)
         
-        if on_change and not read_only:
-            self.checkbox.stateChanged.connect(on_change)
-            
+        self.on_change_callback = on_change
+
+    def update_button_appearance(self, checked):
+        if checked:
+            self.button.setText("●")
+            self.button.setStyleSheet("""
+                QPushButton {
+                    background-color: #14360a;
+                    color: white;
+                    border: 1px solid #092404;
+                    border-radius: 0px;
+                    font-size: 8px;
+                    width: 15px;
+                    height: 15px;
+                }
+            """)
+        else:
+            self.button.setText("")
+            self.button.setStyleSheet("""
+                QPushButton {
+                    background-color: #ffffff;
+                    border: 1px solid #777777;
+                    border-radius: 0px;
+                    width: 15px;
+                    height: 15px;
+                }
+                QPushButton:hover {
+                    border: 1px solid #14360a;
+                }
+                QPushButton:disabled {
+                    background-color: #e0e0e0;
+                    border: 1px solid #aaaaaa;
+                }
+            """)
+
+    def _on_clicked(self, checked):
+        self.update_button_appearance(checked)
+        if self.on_change_callback:
+            self.on_change_callback(checked)
+
     def isChecked(self):
-        return self.checkbox.isChecked()
+        return self.button.isChecked()
         
     def setChecked(self, checked):
-        self.checkbox.setChecked(checked)
+        self.button.setChecked(checked)
+        self.update_button_appearance(checked)
 
 # Custom Dropdown for Priority
 class PriorityComboBox(QComboBox):
@@ -87,14 +130,105 @@ class PriorityComboBox(QComboBox):
 
 # Custom Calendar Popup Dialog Widget
 class CalendarDialog(QDialog):
-    def __init__(self, parent=None, initial_date=None):
+    def __init__(self, parent=None, initial_date=None, is_dark_mode=False):
         super().__init__(parent)
         self.setWindowTitle("Select Date")
-        self.setFixedSize(300, 250)
+        self.setFixedSize(400, 300)
         
         layout = QVBoxLayout(self)
         self.calendar = QCalendarWidget(self)
         self.calendar.setGridVisible(True)
+        self.calendar.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
+        self.calendar.setHorizontalHeaderFormat(QCalendarWidget.SingleLetterDayNames)
+        
+        if is_dark_mode:
+            self.setStyleSheet("""
+                QDialog {
+                    background-color: #1e1e1e;
+                    color: #e0e0e0;
+                }
+                QPushButton {
+                    background-color: #333333;
+                    color: #ffffff;
+                    border: 1px solid #555555;
+                    padding: 6px;
+                }
+                QPushButton:hover {
+                    background-color: #444444;
+                }
+            """)
+            
+            self.calendar.setStyleSheet("""
+                QCalendarWidget QWidget { 
+                    background-color: #252526; 
+                    color: #e0e0e0; 
+                }
+                QCalendarWidget QWidget#qt_calendar_navigationbar { 
+                    background-color: #333333; 
+                }
+                QCalendarWidget QToolButton { 
+                    color: #ffffff; 
+                    background-color: #333333; 
+                    border: none;
+                    font-weight: bold;
+                    padding-right: 14px;
+                }
+                QCalendarWidget QToolButton::menu-indicator {
+                    subcontrol-origin: padding;
+                    subcontrol-position: center right;
+                    right: 2px;
+                }
+                QCalendarWidget QToolButton:hover { 
+                    background-color: #444444; 
+                }
+                QCalendarWidget QMenu { 
+                    background-color: #2b2b2b; 
+                    color: #ffffff; 
+                }
+                QCalendarWidget QSpinBox { 
+                    background-color: #333333; 
+                    color: #ffffff; 
+                }
+                QCalendarWidget QTableView {
+                    background-color: #1e1e1e;
+                    color: #e0e0e0;
+                    selection-background-color: #1976D2;
+                    selection-color: #ffffff;
+                    gridline-color: #444444;
+                }
+                QCalendarWidget QTableView QHeaderView::section {
+                    background-color: #333333;
+                    color: #ffffff;
+                    border: 1px solid #444444;
+                    padding: 2px;
+                    font-weight: bold;
+                }
+            """)
+            
+            header_fmt = QTextCharFormat()
+            header_fmt.setBackground(QBrush(QColor("#333333")))
+            header_fmt.setForeground(QBrush(QColor("#ffffff")))
+            header_fmt.setFontWeight(QFont.Bold)
+            self.calendar.setHeaderTextFormat(header_fmt)
+            
+        else:
+            self.setStyleSheet("""
+                QDialog {
+                    background-color: #f5f5f5;
+                    color: #000000;
+                }
+                QPushButton {
+                    background-color: #e0e0e0;
+                    color: #000000;
+                    border: 1px solid #cccccc;
+                    padding: 6px;
+                }
+                QPushButton:hover {
+                    background-color: #d0d0d0;
+                }
+            """)
+            self.calendar.setStyleSheet("")
+            self.calendar.setHeaderTextFormat(QTextCharFormat())
         
         if initial_date and initial_date.isValid():
             self.calendar.setSelectedDate(initial_date)
@@ -125,7 +259,8 @@ class DateDelegate(QStyledItemDelegate):
             if not initial_date.isValid():
                 initial_date = QDate.currentDate()
                 
-        dlg = CalendarDialog(parent, initial_date)
+        is_dark = self.app_ref.is_dark_mode if self.app_ref else False
+        dlg = CalendarDialog(parent, initial_date, is_dark_mode=is_dark)
         if dlg.exec_() == QDialog.Accepted:
             selected_date = dlg.get_selected_date()
             index.model().setData(index, selected_date, Qt.EditRole)
@@ -134,11 +269,12 @@ class DateDelegate(QStyledItemDelegate):
         return None
 
 class HyperlinkTextEdit(QTextEdit):
-    def __init__(self, text="", table_ref=None, read_only=False):
+    def __init__(self, text="", table_ref=None, read_only=False, is_dark_mode=False):
         super().__init__()
         self.table_ref = table_ref
         self.setAcceptRichText(True)
         self.setReadOnly(read_only)
+        self.is_dark_mode = is_dark_mode
         
         # Override default Qt list indent width
         self.document().setIndentWidth(30)
@@ -146,19 +282,122 @@ class HyperlinkTextEdit(QTextEdit):
         # Set custom tab stop distance to control the gap width after bullets
         self.setTabStopDistance(12)
         
-        self.setStyleSheet("""
-            QTextEdit {
+        self.update_style_and_links(text)
+
+    def update_style_and_links(self, text="", text_color=None):
+        if not text_color:
+            text_color = "#e0e0e0" if self.is_dark_mode else "#000000"
+            
+        link_color_hex = "#64b5f6" if self.is_dark_mode else "#0000ff"
+        scroll_thumb_color = "#555555" if self.is_dark_mode else "#c1c1c1"
+        scroll_thumb_hover = "#777777" if self.is_dark_mode else "#a8a8a8"
+
+        self.setStyleSheet(f"""
+            QTextEdit {{
                 border: none; 
                 background-color: transparent;
-                color: inherit;
+                color: {text_color};
                 font-family: 'Segoe UI';
                 font-size: 15px; 
                 selection-background-color: #b0d0ff;
                 selection-color: #000000;
-            }
+            }}
+            QScrollBar:vertical {{
+                border: none;
+                background: transparent;
+                width: 6px;
+                margin: 2px 0px 2px 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {scroll_thumb_color};
+                min-height: 15px;
+                border-radius: 3px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {scroll_thumb_hover};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                border: none;
+                background: none;
+                height: 0px;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: none;
+            }}
         """)
+        
         if text:
             self.setHtml(text)
+            
+        # Natively traverse and force override text colors on the underlying Qt text fragments
+        cursor = QTextCursor(self.document())
+        cursor.beginEditBlock()
+        
+        block = self.document().begin()
+        while block.isValid():
+            it = block.begin()
+            while not it.atEnd():
+                fragment = it.fragment()
+                if fragment.isValid():
+                    fmt = fragment.charFormat()
+                    
+                    if fmt.isAnchor() or fmt.underlineStyle() != QTextCharFormat.NoUnderline:
+                        fmt.setForeground(QColor(link_color_hex))
+                    else:
+                        fmt.setForeground(QColor(text_color))
+                        
+                    # Clear any baked-in background highlights from copy-pasting
+                    fmt.clearBackground()
+                    
+                    temp_cursor = QTextCursor(self.document())
+                    temp_cursor.setPosition(fragment.position())
+                    temp_cursor.setPosition(fragment.position() + fragment.length(), QTextCursor.KeepAnchor)
+                    temp_cursor.setCharFormat(fmt)
+                    
+                it += 1
+            block = block.next()
+            
+        cursor.endEditBlock()
+
+    def remove_formatting(self):
+        cursor = self.textCursor()
+        has_selection = cursor.hasSelection()
+        
+        # If nothing is selected, apply to the entire document block
+        if not has_selection:
+            cursor.select(QTextCursor.Document)
+            
+        text_color = "#e0e0e0" if self.is_dark_mode else "#000000"
+        link_color = "#64b5f6" if self.is_dark_mode else "#0000ff"
+            
+        start = cursor.selectionStart()
+        end = cursor.selectionEnd()
+        
+        cursor.setPosition(start)
+        cursor.beginEditBlock()
+        
+        while cursor.position() < end:
+            cursor.movePosition(QTextCursor.NextCharacter, QTextCursor.KeepAnchor)
+            fmt = cursor.charFormat()
+            
+            clean_fmt = QTextCharFormat()
+            # Safely rebuild standard links and text formats while leaving block structure (lists) intact
+            if fmt.isAnchor():
+                clean_fmt.setAnchor(True)
+                clean_fmt.setAnchorHref(fmt.anchorHref())
+                clean_fmt.setFontUnderline(True)
+                clean_fmt.setForeground(QColor(link_color))
+            else:
+                clean_fmt.setForeground(QColor(text_color))
+                
+            cursor.setCharFormat(clean_fmt)
+            cursor.setPosition(cursor.position())
+            
+        cursor.endEditBlock()
+        
+        if not has_selection:
+            cursor.clearSelection()
+            self.setTextCursor(cursor)
 
     def create_bullet_list(self, level=1):
         cursor = self.textCursor()
@@ -320,7 +559,8 @@ class HyperlinkTextEdit(QTextEdit):
             if re.search(url_pattern, text):
                 def make_anchor(match):
                     url = match.group(0)
-                    return f'<a href="{url}">{url}</a>'
+                    link_color_hex = "#64b5f6" if self.is_dark_mode else "#0000ff"
+                    return f'<a href="{url}" style="color: {link_color_hex};">{url}</a>'
                 converted_html = re.sub(url_pattern, make_anchor, text).replace('\n', '<br>')
                 self.insertHtml(converted_html)
             else:
@@ -345,6 +585,10 @@ class HyperlinkTextEdit(QTextEdit):
         menu.addSeparator()
 
         if not self.isReadOnly():
+            remove_fmt_action = QAction("Remove Formatting", self)
+            remove_fmt_action.triggered.connect(self.remove_formatting)
+            menu.addAction(remove_fmt_action)
+            
             insert_link_action = QAction("Insert Link...", self)
             insert_link_action.triggered.connect(self.prompt_insert_link)
             menu.addAction(insert_link_action)
@@ -363,7 +607,8 @@ class HyperlinkTextEdit(QTextEdit):
         )
         if ok and url:
             display_text = selected_text if selected_text else url
-            html_link = f'<a href="{url}">{display_text}</a>'
+            link_color_hex = "#64b5f6" if self.is_dark_mode else "#0000ff"
+            html_link = f'<a href="{url}" style="color: {link_color_hex};">{display_text}</a>'
             cursor.insertHtml(html_link)
 
     def delete_this_row(self):
@@ -378,6 +623,7 @@ class TodoApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("To-Do Tracker")
+        self.is_dark_mode = False
         
         # Ensure json saves next to executable or script
         if getattr(sys, 'frozen', False):
@@ -408,15 +654,6 @@ class TodoApp(QMainWindow):
     def init_ui(self):
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
-        
-        self.tabs.setStyleSheet("""
-            QTabBar::tab {
-                padding: 10px 20px;
-                font-weight: bold;
-                font-size: 14px;
-                min-width: 120px; 
-            }
-        """)
 
         self.todo_tab = QWidget()
         self.archive_tab = QWidget()
@@ -431,34 +668,12 @@ class TodoApp(QMainWindow):
         table = QTableWidget(0, 7)
         table.setHorizontalHeaderLabels(self.headers)
         table.setSelectionMode(QAbstractItemView.NoSelection)
-        
-        header_color = "#D32F2F" if is_archive else "#6CBE45"
+        table.setFrameShape(QFrame.NoFrame)  # Disables default Qt white outer frame
         
         if is_archive:
             table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         else:
             table.setEditTriggers(QAbstractItemView.AllEditTriggers)
-        
-        table.setStyleSheet(f"""
-            QHeaderView::section {{
-                background-color: {header_color};
-                color: white;
-                font-weight: bold;
-                font-size: 13px;
-                border: 1px solid #d3d3d3;
-                padding: 6px;
-            }}
-            QTableWidget {{
-                gridline-color: #a0a0a0;
-                font-size: 14px;
-                outline: 0;
-            }}
-            QTableWidget::item:selected, QTableWidget::item:focus {{
-                background-color: transparent;
-                border: none;
-                outline: none;
-            }}
-        """)
 
         header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
@@ -478,6 +693,7 @@ class TodoApp(QMainWindow):
 
     def setup_todo_tab(self):
         layout = QVBoxLayout(self.todo_tab)
+        layout.setContentsMargins(0, 0, 0, 0)
         self.todo_table = self.create_table(is_archive=False)
         
         date_delegate = DateDelegate(self.todo_table, app_ref=self)
@@ -492,6 +708,7 @@ class TodoApp(QMainWindow):
         layout.addWidget(self.todo_table)
 
         btn_layout = QHBoxLayout()
+        btn_layout.setContentsMargins(10, 10, 10, 10)
         
         # Left-aligned action buttons
         self.add_btn = QPushButton("+ Add New Task")
@@ -508,6 +725,11 @@ class TodoApp(QMainWindow):
         self.save_btn.setStyleSheet("padding: 8px;")
         self.save_btn.clicked.connect(self.save_data)
         btn_layout.addWidget(self.save_btn)
+
+        self.dark_mode_btn = QPushButton("Dark Mode")
+        self.dark_mode_btn.setStyleSheet("padding: 8px;")
+        self.dark_mode_btn.clicked.connect(self.toggle_dark_mode)
+        btn_layout.addWidget(self.dark_mode_btn)
 
         # Stretch spacing to push Export and Backup buttons to far right
         btn_layout.addStretch()
@@ -529,12 +751,192 @@ class TodoApp(QMainWindow):
 
     def setup_archive_tab(self):
         layout = QVBoxLayout(self.archive_tab)
+        layout.setContentsMargins(0, 0, 0, 0)
         self.archive_table = self.create_table(is_archive=True)
         
         self.archive_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.archive_table.customContextMenuRequested.connect(self.open_context_menu)
         
         layout.addWidget(self.archive_table)
+
+    def toggle_dark_mode(self):
+        self.is_dark_mode = not self.is_dark_mode
+        self.apply_theme()
+        self.save_data()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.apply_theme()
+
+    def apply_theme(self):
+        header_color = "#388E3C" if self.is_dark_mode else "#6CBE45"
+        archive_header = "#B71C1C" if self.is_dark_mode else "#D32F2F"
+        bg_color = "#1e1e1e" if self.is_dark_mode else "#f5f5f5"
+        text_color = "#e0e0e0" if self.is_dark_mode else "#000000"
+        grid_color = "#444444" if self.is_dark_mode else "#a0a0a0"
+        table_bg = "#252526" if self.is_dark_mode else "#ffffff"
+
+        scroll_thumb_color = "#555555" if self.is_dark_mode else "#c1c1c1"
+        scroll_thumb_hover = "#777777" if self.is_dark_mode else "#a8a8a8"
+
+        # Tab specific colors for Light & Dark mode
+        todo_tab_selected = "#2e6930" if self.is_dark_mode else "#c8e6c9"
+        todo_tab_unselected = "#1b3e20" if self.is_dark_mode else "#e8f5e9"
+        
+        archive_tab_selected = "#7a2829" if self.is_dark_mode else "#ffcdd2"
+        archive_tab_unselected = "#4a1c1d" if self.is_dark_mode else "#ffebee"
+
+        tab_text = "#ffffff" if self.is_dark_mode else "#000000"
+
+        # 1. Update Windows Native Title Bar Theme (only when window is visible)
+        if sys.platform == "win32" and hasattr(ctypes, "windll") and self.isVisible():
+            try:
+                hwnd = int(self.winId())
+                value = ctypes.c_int(1 if self.is_dark_mode else 0)
+                res = ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(value), ctypes.sizeof(value))
+                if res != 0:
+                    ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ctypes.byref(value), ctypes.sizeof(value))
+            except Exception:
+                pass
+
+        # 2. Main Window, Tab Widget, & Custom Tab Colors
+        self.setStyleSheet(f"""
+            QMainWindow, QWidget {{
+                background-color: {bg_color};
+                color: {text_color};
+            }}
+            QTabWidget::pane {{
+                border: 1px solid {grid_color};
+                background-color: {table_bg};
+            }}
+            QTabBar::tab {{
+                padding: 10px 20px;
+                font-weight: bold;
+                font-size: 14px;
+                min-width: 120px;
+                border: 1px solid {grid_color};
+                border-bottom: none;
+            }}
+            QTabBar::tab:first {{
+                background-color: {todo_tab_unselected};
+                color: {tab_text};
+            }}
+            QTabBar::tab:first:selected {{
+                background-color: {todo_tab_selected};
+                color: {tab_text};
+            }}
+            QTabBar::tab:last {{
+                background-color: {archive_tab_unselected};
+                color: {tab_text};
+            }}
+            QTabBar::tab:last:selected {{
+                background-color: {archive_tab_selected};
+                color: {tab_text};
+            }}
+        """)
+
+        # 3. Table & Thin Scrollbar Styling
+        table_style = f"""
+            QTableCornerButton::section {{
+                background-color: {header_color};
+                border: 1px solid {grid_color};
+            }}
+            QHeaderView::section {{
+                background-color: {header_color};
+                color: white;
+                font-weight: bold;
+                font-size: 13px;
+                border: 1px solid {grid_color};
+                padding: 6px;
+            }}
+            QTableWidget {{
+                background-color: {table_bg};
+                gridline-color: {grid_color};
+                font-size: 14px;
+                outline: 0;
+                border: none;
+            }}
+            QScrollBar:vertical {{
+                border: none;
+                background: transparent;
+                width: 6px;
+                margin: 2px 0px 2px 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {scroll_thumb_color};
+                min-height: 15px;
+                border-radius: 3px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {scroll_thumb_hover};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                border: none;
+                background: none;
+                height: 0px;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: none;
+            }}
+        """
+
+        archive_style = f"""
+            QTableCornerButton::section {{
+                background-color: {archive_header};
+                border: 1px solid {grid_color};
+            }}
+            QHeaderView::section {{
+                background-color: {archive_header};
+                color: white;
+                font-weight: bold;
+                font-size: 13px;
+                border: 1px solid {grid_color};
+                padding: 6px;
+            }}
+            QTableWidget {{
+                background-color: {table_bg};
+                gridline-color: {grid_color};
+                font-size: 14px;
+                outline: 0;
+                border: none;
+            }}
+            QScrollBar:vertical {{
+                border: none;
+                background: transparent;
+                width: 6px;
+                margin: 2px 0px 2px 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {scroll_thumb_color};
+                min-height: 15px;
+                border-radius: 3px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {scroll_thumb_hover};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                border: none;
+                background: none;
+                height: 0px;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: none;
+            }}
+        """
+
+        self.todo_table.setStyleSheet(table_style)
+        self.archive_table.setStyleSheet(archive_style)
+
+        # Force Qt style polish so headers render styled on startup
+        for w in [self, self.todo_table, self.archive_table, self.todo_table.horizontalHeader(), self.archive_table.horizontalHeader()]:
+            w.style().unpolish(w)
+            w.style().polish(w)
+
+        # 4. Update row background, text, and link colors
+        for r in range(self.todo_table.rowCount()):
+            self.refresh_row_style(r)
+        for r in range(self.archive_table.rowCount()):
+            self.refresh_row_style(r, is_archive=True)
 
     def add_row(self, table, row_data=None, is_archive=False):
         table.blockSignals(True) 
@@ -557,7 +959,7 @@ class TodoApp(QMainWindow):
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
             
             if header_name in ["Tasks/Subtasks", "Updates/Comments"]:
-                editor = HyperlinkTextEdit(row_data.get(header_name, ""), table_ref=table, read_only=is_archive)
+                editor = HyperlinkTextEdit(row_data.get(header_name, ""), table_ref=table, read_only=is_archive, is_dark_mode=self.is_dark_mode)
                 table.setItem(row, col, item)
                 table.setCellWidget(row, col, editor)
             
@@ -596,11 +998,7 @@ class TodoApp(QMainWindow):
         table.blockSignals(False)
         
         if is_archive:
-            for col in range(table.columnCount()):
-                cell_item = table.item(row, col)
-                if cell_item:
-                    cell_item.setBackground(QBrush(QColor("#ffffff")))
-                    cell_item.setForeground(QBrush(QColor("#000000")))
+            self.refresh_row_style(row, is_archive=True)
         else:
             self.refresh_row_style(row)
 
@@ -617,21 +1015,54 @@ class TodoApp(QMainWindow):
         for data in reversed(rows_to_archive):
             self.add_row(self.archive_table, data, is_archive=True)
 
-    def refresh_row_style(self, row):
-        self.todo_table.blockSignals(True)
+    def refresh_row_style(self, row, is_archive=False):
+        table = self.archive_table if is_archive else self.todo_table
+        table.blockSignals(True)
         
         try:
-            cb_widget = self.todo_table.cellWidget(row, self.headers.index("Completed?"))
+            if is_archive:
+                bg_hex = "#2d2d2d" if self.is_dark_mode else "#ffffff"
+                fg_hex = "#e0e0e0" if self.is_dark_mode else "#000000"
+                bg_brush = QBrush(QColor(bg_hex))
+                fg_brush = QBrush(QColor(fg_hex))
+                
+                for col in range(table.columnCount()):
+                    cell_item = table.item(row, col)
+                    if cell_item:
+                        cell_item.setBackground(bg_brush)
+                        cell_item.setForeground(fg_brush)
+                    
+                    widget = table.cellWidget(row, col)
+                    if isinstance(widget, HyperlinkTextEdit):
+                        widget.is_dark_mode = self.is_dark_mode
+                        widget.update_style_and_links(widget.toHtml(), text_color=fg_hex)
+                    elif isinstance(widget, PriorityComboBox):
+                        widget.setStyleSheet(f"""
+                            QComboBox {{
+                                border: none;
+                                background-color: transparent;
+                                color: {fg_hex};
+                                font-family: 'Segoe UI';
+                                font-size: 14px;
+                            }}
+                        """)
+                return
+
+            cb_widget = table.cellWidget(row, self.headers.index("Completed?"))
             is_completed = cb_widget.isChecked() if isinstance(cb_widget, CenteredCheckBox) else False
 
-            bg_brush = QBrush(QColor("#3B7A24")) if is_completed else QBrush(QColor("#ffffff"))
-            fg_brush = QBrush(QColor("#ffffff")) if is_completed else QBrush(QColor("#000000"))
-            caret_brush = QBrush(QColor("#a0dda0")) if is_completed else QBrush(QColor("#888888"))
+            bg_hex = "#2e5b1c" if (is_completed and self.is_dark_mode) else ("#3B7A24" if is_completed else ("#252526" if self.is_dark_mode else "#ffffff"))
+            fg_hex = "#ffffff" if is_completed else ("#e0e0e0" if self.is_dark_mode else "#000000")
+            caret_hex = "#a0dda0" if is_completed else ("#888888" if not self.is_dark_mode else "#aaaaaa")
+
+            bg_brush = QBrush(QColor(bg_hex))
+            fg_brush = QBrush(QColor(fg_hex))
+            caret_brush = QBrush(QColor(caret_hex))
 
             today = QDate.currentDate()
 
-            for col in range(self.todo_table.columnCount()):
-                cell_item = self.todo_table.item(row, col)
+            for col in range(table.columnCount()):
+                cell_item = table.item(row, col)
                 header_name = self.headers[col]
 
                 if cell_item:
@@ -652,13 +1083,13 @@ class TodoApp(QMainWindow):
                             days_diff = today.daysTo(deadline_date)
 
                             if days_diff <= 0:
-                                cell_item.setForeground(QBrush(QColor("#D32F2F"))) # Red
+                                cell_item.setForeground(QBrush(QColor("#ff6b6b" if self.is_dark_mode else "#D32F2F"))) # Red
                                 font.setBold(True)
                             elif days_diff == 1:
-                                cell_item.setForeground(QBrush(QColor("#FF8C00"))) # Amber/Orange
+                                cell_item.setForeground(QBrush(QColor("#ffb74d" if self.is_dark_mode else "#FF8C00"))) # Amber/Orange
                                 font.setBold(True)
                             else:
-                                cell_item.setForeground(QBrush(QColor("#000000"))) # Black
+                                cell_item.setForeground(fg_brush)
                                 font.setBold(False)
                         else:
                             cell_item.setForeground(fg_brush)
@@ -672,41 +1103,30 @@ class TodoApp(QMainWindow):
                         font.setBold(False)
                         cell_item.setFont(font)
                 
-                widget = self.todo_table.cellWidget(row, col)
+                widget = table.cellWidget(row, col)
                 
                 if isinstance(widget, HyperlinkTextEdit):
-                    text_color_css = "color: #ffffff;" if is_completed else "color: #000000;"
-                    widget.setStyleSheet(f"""
-                        QTextEdit {{
-                            border: none; 
-                            background-color: transparent;
-                            {text_color_css}
-                            font-family: 'Segoe UI';
-                            font-size: 15px; 
-                            selection-background-color: #b0d0ff;
-                            selection-color: #000000;
-                        }}
-                    """)
+                    widget.is_dark_mode = self.is_dark_mode
+                    widget.update_style_and_links(widget.toHtml(), text_color=fg_hex)
                     
                 elif isinstance(widget, PriorityComboBox):
-                    text_color_css = "color: #ffffff;" if is_completed else "color: #000000;"
                     widget.setStyleSheet(f"""
                         QComboBox {{
                             border: none;
                             background-color: transparent;
-                            {text_color_css}
+                            color: {fg_hex};
                             font-family: 'Segoe UI';
                             font-size: 14px;
                         }}
                         QComboBox QAbstractItemView {{
-                            background-color: #ffffff;
-                            color: #000000;
+                            background-color: {"#333333" if self.is_dark_mode else "#ffffff"};
+                            color: {fg_hex};
                             font-family: 'Segoe UI';
                             selection-background-color: #b0d0ff;
                         }}
                     """)
         finally:
-            self.todo_table.blockSignals(False)
+            table.blockSignals(False)
 
     def open_context_menu(self, position):
         table = self.sender()
@@ -737,7 +1157,6 @@ class TodoApp(QMainWindow):
         for col, header_name in enumerate(self.headers):
             if header_name in ["Tasks/Subtasks", "Updates/Comments"]:
                 widget = table.cellWidget(row, col)
-                # Store full HTML so all bold, italics, bullets, and links reload natively in PyQt
                 row_data[header_name] = widget.toHtml() if widget else ""
             
             elif header_name == "Completed?":
@@ -760,6 +1179,7 @@ class TodoApp(QMainWindow):
 
     def save_data(self):
         data = {
+            "dark_mode": self.is_dark_mode,
             "todo": [],
             "archive": []
         }
@@ -783,6 +1203,7 @@ class TodoApp(QMainWindow):
         backup_file = os.path.join(backup_dir, f"todo_data_backup_{timestamp}.json")
         
         data = {
+            "dark_mode": self.is_dark_mode,
             "todo": [self.get_row_data(self.todo_table, r) for r in range(self.todo_table.rowCount())],
             "archive": [self.get_row_data(self.archive_table, r) for r in range(self.archive_table.rowCount())]
         }
@@ -799,10 +1220,8 @@ class TodoApp(QMainWindow):
 
         with open(file_path, 'w', newline='', encoding='utf-8-sig') as f:
             writer = csv.writer(f)
-            # Write column headers with an extra column indicating status
             writer.writerow(self.headers + ["Status"])
             
-            # Export active tasks (cleaning HTML specifically for CSV/Excel)
             for row in range(self.todo_table.rowCount()):
                 data = self.get_row_data(self.todo_table, row)
                 row_vals = []
@@ -813,7 +1232,6 @@ class TodoApp(QMainWindow):
                     row_vals.append(val)
                 writer.writerow(row_vals + ["To-Do"])
 
-            # Export archived tasks
             for row in range(self.archive_table.rowCount()):
                 data = self.get_row_data(self.archive_table, row)
                 row_vals = []
@@ -831,18 +1249,21 @@ class TodoApp(QMainWindow):
             with open(self.data_file, 'r', encoding='utf-8') as f:
                 try:
                     data = json.load(f)
-                    if isinstance(data, list):
-                        for row_data in data:
-                            self.add_row(self.todo_table, row_data, is_archive=False)
-                    elif isinstance(data, dict):
+                    if isinstance(data, dict):
+                        self.is_dark_mode = data.get("dark_mode", False)
                         for row_data in data.get("todo", []):
                             self.add_row(self.todo_table, row_data, is_archive=False)
                         for row_data in data.get("archive", []):
                             self.add_row(self.archive_table, row_data, is_archive=True)
+                    elif isinstance(data, list):
+                        for row_data in data:
+                            self.add_row(self.todo_table, row_data, is_archive=False)
                 except json.JSONDecodeError:
                     self.add_row(self.todo_table, is_archive=False)
         else:
             self.add_row(self.todo_table, is_archive=False)
+
+        self.apply_theme()
 
     def closeEvent(self, event):
         self.save_data()
