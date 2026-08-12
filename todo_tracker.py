@@ -44,6 +44,30 @@ def html_to_clean_text(html_str):
     lines = [line.strip() for line in text.split('\n')]
     return '\n'.join([l for l in lines if l]).strip()
 
+# Custom QTableWidgetItem for sorting dates while keeping empty items pinned to the bottom
+class DateTableItem(QTableWidgetItem):
+    def __init__(self, text=""):
+        super().__init__(text)
+        
+    def __lt__(self, other):
+        t1 = self.text().replace("▼", "").strip()
+        t2 = other.text().replace("▼", "").strip()
+        
+        table = self.tableWidget()
+        if table:
+            sort_order = table.horizontalHeader().sortIndicatorOrder()
+            if sort_order == Qt.DescendingOrder:
+                v1 = t1 if t1 else "0000-00-00"
+                v2 = t2 if t2 else "0000-00-00"
+            else:
+                v1 = t1 if t1 else "9999-99-99"
+                v2 = t2 if t2 else "9999-99-99"
+        else:
+            v1 = t1 if t1 else "9999-99-99"
+            v2 = t2 if t2 else "9999-99-99"
+            
+        return v1 < v2
+
 # Custom Widget using a checkable button with square corners and a dark green checked interior
 class CenteredCheckBox(QWidget):
     def __init__(self, parent=None, checked=False, on_change=None, read_only=False):
@@ -243,7 +267,7 @@ class CalendarDialog(QDialog):
     def get_selected_date(self):
         return self.calendar.selectedDate().toString("yyyy-MM-dd")
 
-# Delegate to trigger calendar on clicking Date columns
+# Delegate to trigger calendar on double clicking Date columns
 class DateDelegate(QStyledItemDelegate):
     def __init__(self, parent=None, app_ref=None):
         super().__init__(parent)
@@ -665,18 +689,24 @@ class TodoApp(QMainWindow):
         self.setup_archive_tab()
 
     def create_table(self, is_archive=False):
-        table = QTableWidget(0, 7)
-        table.setHorizontalHeaderLabels(self.headers)
+        table = QTableWidget(0, len(self.headers) + 1)
+        table.setHorizontalHeaderLabels(self.headers + ["_OriginalOrder"])
         table.setSelectionMode(QAbstractItemView.NoSelection)
-        table.setFrameShape(QFrame.NoFrame)  # Disables default Qt white outer frame
+        table.setFrameShape(QFrame.NoFrame)  
+        table.setColumnHidden(len(self.headers), True)
+        
+        table.sort_state = {3: 0, 4: 0}
         
         if is_archive:
             table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         else:
-            table.setEditTriggers(QAbstractItemView.AllEditTriggers)
+            # Require double-click to edit/open calendar on date cells, preventing single-click header interference
+            table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
 
         header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
+        
+        header.sectionClicked.connect(lambda idx, t=table: self.on_header_clicked(t, idx))
         
         table.setColumnWidth(0, 130) # Category
         table.setColumnWidth(1, 380) # Tasks/Subtasks
@@ -687,6 +717,36 @@ class TodoApp(QMainWindow):
         table.setColumnWidth(6, 350) # Updates/Comments
 
         return table
+
+    def on_header_clicked(self, table, logicalIndex):
+        if logicalIndex not in [3, 4]:
+            table.horizontalHeader().setSortIndicatorShown(False)
+            table.sort_state = {3: 0, 4: 0}
+            table.sortItems(len(self.headers), Qt.AscendingOrder)
+            return
+            
+        state = table.sort_state
+        current_stage = state[logicalIndex]
+        
+        other_idx = 4 if logicalIndex == 3 else 3
+        state[other_idx] = 0
+        
+        new_stage = (current_stage + 1) % 3
+        state[logicalIndex] = new_stage
+        
+        header = table.horizontalHeader()
+        
+        if new_stage == 1:
+            header.setSortIndicatorShown(True)
+            header.setSortIndicator(logicalIndex, Qt.AscendingOrder)
+            table.sortItems(logicalIndex, Qt.AscendingOrder)
+        elif new_stage == 2:
+            header.setSortIndicatorShown(True)
+            header.setSortIndicator(logicalIndex, Qt.DescendingOrder)
+            table.sortItems(logicalIndex, Qt.DescendingOrder)
+        else:
+            header.setSortIndicatorShown(False)
+            table.sortItems(len(self.headers), Qt.AscendingOrder)
 
     def on_item_changed(self, item):
         self.refresh_row_style(item.row())
@@ -938,22 +998,44 @@ class TodoApp(QMainWindow):
         for r in range(self.archive_table.rowCount()):
             self.refresh_row_style(r, is_archive=True)
 
+    def get_widget_row(self, table, widget):
+        for r in range(table.rowCount()):
+            for c in range(table.columnCount()):
+                if table.cellWidget(r, c) == widget:
+                    return r
+        return -1
+
     def add_row(self, table, row_data=None, is_archive=False):
         table.blockSignals(True) 
         
         row = table.rowCount()
         table.insertRow(row)
 
+        if not hasattr(table, 'row_counter'):
+            table.row_counter = 0
+            
         if row_data is None:
             row_data = {col: "" for col in self.headers}
             row_data["Completed?"] = False
             row_data["row_height"] = 90
+            
+        orig_order = row_data.get("_OriginalOrder", None)
+        if orig_order is None:
+            table.row_counter += 1
+            orig_order = f"{table.row_counter:06d}"
+        else:
+            table.row_counter = max(table.row_counter, int(orig_order))
+            
+        row_data["_OriginalOrder"] = orig_order
 
         height = row_data.get("row_height", 90)
         table.setRowHeight(row, height)
 
         for col, header_name in enumerate(self.headers):
-            item = QTableWidgetItem()
+            if header_name in ["Date Assigned", "Deadline?"]:
+                item = DateTableItem()
+            else:
+                item = QTableWidgetItem()
             
             if is_archive:
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
@@ -967,9 +1049,11 @@ class TodoApp(QMainWindow):
                 is_checked = row_data.get(header_name, False)
                 cb_widget = CenteredCheckBox(
                     checked=is_checked, 
-                    on_change=(lambda state, r=row: self.refresh_row_style(r)) if not is_archive else None,
                     read_only=is_archive
                 )
+                if not is_archive:
+                    cb_widget.on_change_callback = lambda state, w=cb_widget, t=table: self.refresh_row_style(self.get_widget_row(t, w))
+                    
                 table.setItem(row, col, item)
                 table.setCellWidget(row, col, cb_widget)
 
@@ -994,6 +1078,9 @@ class TodoApp(QMainWindow):
             else:
                 item.setText(row_data.get(header_name, ""))
                 table.setItem(row, col, item)
+                
+        hidden_item = QTableWidgetItem(orig_order)
+        table.setItem(row, len(self.headers), hidden_item)
 
         table.blockSignals(False)
         
@@ -1009,6 +1096,8 @@ class TodoApp(QMainWindow):
             cb_widget = self.todo_table.cellWidget(row, self.headers.index("Completed?"))
             if isinstance(cb_widget, CenteredCheckBox) and cb_widget.isChecked():
                 row_data = self.get_row_data(self.todo_table, row)
+                if "_OriginalOrder" in row_data:
+                    del row_data["_OriginalOrder"]
                 rows_to_archive.append(row_data)
                 self.todo_table.removeRow(row)
 
@@ -1017,6 +1106,8 @@ class TodoApp(QMainWindow):
 
     def refresh_row_style(self, row, is_archive=False):
         table = self.archive_table if is_archive else self.todo_table
+        if row < 0 or row >= table.rowCount(): return
+        
         table.blockSignals(True)
         
         try:
@@ -1026,7 +1117,7 @@ class TodoApp(QMainWindow):
                 bg_brush = QBrush(QColor(bg_hex))
                 fg_brush = QBrush(QColor(fg_hex))
                 
-                for col in range(table.columnCount()):
+                for col in range(table.columnCount() - 1):
                     cell_item = table.item(row, col)
                     if cell_item:
                         cell_item.setBackground(bg_brush)
@@ -1061,7 +1152,7 @@ class TodoApp(QMainWindow):
 
             today = QDate.currentDate()
 
-            for col in range(table.columnCount()):
+            for col in range(table.columnCount() - 1):
                 cell_item = table.item(row, col)
                 header_name = self.headers[col]
 
@@ -1176,19 +1267,29 @@ class TodoApp(QMainWindow):
                 item = table.item(row, col)
                 row_data[header_name] = item.text() if item else ""
         return row_data
+        
+    def get_all_rows_original_order(self, table):
+        rows_data = []
+        for r in range(table.rowCount()):
+            data = self.get_row_data(table, r)
+            hidden_item = table.item(r, len(self.headers))
+            orig_order = int(hidden_item.text()) if hidden_item else 0
+            rows_data.append((orig_order, data))
+            
+        rows_data.sort(key=lambda x: x[0])
+        
+        clean_rows = []
+        for rd in rows_data:
+            clean_rows.append(rd[1])
+            
+        return clean_rows
 
     def save_data(self):
         data = {
             "dark_mode": self.is_dark_mode,
-            "todo": [],
-            "archive": []
+            "todo": self.get_all_rows_original_order(self.todo_table),
+            "archive": self.get_all_rows_original_order(self.archive_table)
         }
-        
-        for row in range(self.todo_table.rowCount()):
-            data["todo"].append(self.get_row_data(self.todo_table, row))
-            
-        for row in range(self.archive_table.rowCount()):
-            data["archive"].append(self.get_row_data(self.archive_table, row))
 
         with open(self.data_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
@@ -1204,8 +1305,8 @@ class TodoApp(QMainWindow):
         
         data = {
             "dark_mode": self.is_dark_mode,
-            "todo": [self.get_row_data(self.todo_table, r) for r in range(self.todo_table.rowCount())],
-            "archive": [self.get_row_data(self.archive_table, r) for r in range(self.archive_table.rowCount())]
+            "todo": self.get_all_rows_original_order(self.todo_table),
+            "archive": self.get_all_rows_original_order(self.archive_table)
         }
         
         with open(backup_file, 'w', encoding='utf-8') as f:
