@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QTableWidget,
 from PyQt5.QtGui import (QDesktopServices, QTextCursor, QColor, QFont, 
                            QKeySequence, QTextCharFormat, QBrush, QTextListFormat,
                            QTextBlockFormat, QPalette)
-from PyQt5.QtCore import QUrl, Qt, QDate
+from PyQt5.QtCore import QUrl, Qt, QDate, QTimer
 
 # Helper function to convert Qt Rich Text / HTML into clean plain text for CSV/Excel export
 def html_to_clean_text(html_str):
@@ -353,7 +353,6 @@ class HyperlinkTextEdit(QTextEdit):
         if text:
             self.setHtml(text)
             
-        # Natively traverse and force override text colors on the underlying Qt text fragments
         cursor = QTextCursor(self.document())
         cursor.beginEditBlock()
         
@@ -370,7 +369,6 @@ class HyperlinkTextEdit(QTextEdit):
                     else:
                         fmt.setForeground(QColor(text_color))
                         
-                    # Clear any baked-in background highlights from copy-pasting
                     fmt.clearBackground()
                     
                     temp_cursor = QTextCursor(self.document())
@@ -387,7 +385,6 @@ class HyperlinkTextEdit(QTextEdit):
         cursor = self.textCursor()
         has_selection = cursor.hasSelection()
         
-        # If nothing is selected, apply to the entire document block
         if not has_selection:
             cursor.select(QTextCursor.Document)
             
@@ -405,7 +402,6 @@ class HyperlinkTextEdit(QTextEdit):
             fmt = cursor.charFormat()
             
             clean_fmt = QTextCharFormat()
-            # Safely rebuild standard links and text formats while leaving block structure (lists) intact
             if fmt.isAnchor():
                 clean_fmt.setAnchor(True)
                 clean_fmt.setAnchorHref(fmt.anchorHref())
@@ -440,6 +436,7 @@ class HyperlinkTextEdit(QTextEdit):
         block_fmt.setLeftMargin(0)
         cursor.setBlockFormat(block_fmt)
         
+        cursor.movePosition(QTextCursor.StartOfBlock)
         if not cursor.block().text().startswith("\t"):
             cursor.insertText("\t")
 
@@ -447,7 +444,6 @@ class HyperlinkTextEdit(QTextEdit):
         if not self.isReadOnly():
             cursor = self.textCursor()
             
-            # 1. Bold & Italic Shortcuts
             if event.matches(QKeySequence.Bold):
                 self.toggle_bold()
                 event.accept()
@@ -459,7 +455,27 @@ class HyperlinkTextEdit(QTextEdit):
 
             current_list = cursor.currentList()
 
-            # 2. Enter Key handling inside list / empty list
+            # Backspace at start of a bullet line removes the bullet instead of merging lines
+            if event.key() == Qt.Key_Backspace:
+                if current_list:
+                    block = cursor.block()
+                    if cursor.positionInBlock() <= 1:
+                        current_list.remove(block)
+                        block_fmt = cursor.blockFormat()
+                        block_fmt.setObjectIndex(-1)
+                        block_fmt.setIndent(0)
+                        block_fmt.setLeftMargin(0)
+                        cursor.setBlockFormat(block_fmt)
+                        
+                        if block.text().startswith("\t"):
+                            tc = QTextCursor(cursor)
+                            tc.movePosition(QTextCursor.StartOfBlock)
+                            tc.movePosition(QTextCursor.NextCharacter, QTextCursor.KeepAnchor)
+                            if tc.selectedText() == "\t":
+                                tc.removeSelectedText()
+                        event.accept()
+                        return
+
             if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
                 if current_list:
                     block = cursor.block()
@@ -468,7 +484,6 @@ class HyperlinkTextEdit(QTextEdit):
                         if current_indent > 1:
                             self.create_bullet_list(level=1)
                         else:
-                            # Remove block from list, reset margins, and clear line text without deleting line break
                             current_list.remove(block)
                             block_fmt = cursor.blockFormat()
                             block_fmt.setObjectIndex(-1)
@@ -488,16 +503,14 @@ class HyperlinkTextEdit(QTextEdit):
                             new_cursor.insertText("\t")
                         return
 
-            # 3. Tab Key handling (Indent ONLY current item to Level 2 sub-bullet)
             if event.key() == Qt.Key_Tab and not (event.modifiers() & Qt.ShiftModifier):
                 if current_list:
                     current_indent = current_list.format().indent()
-                    if current_indent < 2:  # Cap at Level 2 max
+                    if current_indent < 2:
                         self.create_bullet_list(level=2)
                     event.accept()
                     return
 
-            # 4. Shift+Tab Key handling (Outdent ONLY current item back to Level 1)
             if event.key() == Qt.Key_Backtab or (event.key() == Qt.Key_Tab and (event.modifiers() & Qt.ShiftModifier)):
                 if current_list:
                     current_indent = current_list.format().indent()
@@ -506,13 +519,15 @@ class HyperlinkTextEdit(QTextEdit):
                     event.accept()
                     return
 
-            # 5. "* " trigger at the start of a line to enable bullet mode
             if event.key() == Qt.Key_Space:
-                block_text = cursor.block().text()
-                if block_text == "*":
-                    cursor.movePosition(QTextCursor.StartOfBlock)
-                    cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
-                    cursor.removeSelectedText()
+                cursor = self.textCursor()
+                block = cursor.block()
+                block_text = block.text()
+                if cursor.positionInBlock() == 1 and block_text.startswith("*"):
+                    tc = QTextCursor(cursor)
+                    tc.movePosition(QTextCursor.StartOfBlock)
+                    tc.movePosition(QTextCursor.NextCharacter, QTextCursor.KeepAnchor)
+                    tc.removeSelectedText()
                     
                     self.create_bullet_list(level=1)
                     event.accept()
@@ -599,6 +614,17 @@ class HyperlinkTextEdit(QTextEdit):
         super().mouseReleaseEvent(event)
 
     def contextMenuEvent(self, event):
+        click_cursor = self.cursorForPosition(event.pos())
+        current_cursor = self.textCursor()
+        
+        if current_cursor.hasSelection():
+            start = current_cursor.selectionStart()
+            end = current_cursor.selectionEnd()
+            if not (start <= click_cursor.position() <= end):
+                self.setTextCursor(click_cursor)
+        else:
+            self.setTextCursor(click_cursor)
+
         menu = self.createStandardContextMenu()
         menu.setStyleSheet("""
             QMenu { background-color: #2b2b2b; color: #ffffff; border: 1px solid #555555; font-family: 'Segoe UI'; }
@@ -612,6 +638,10 @@ class HyperlinkTextEdit(QTextEdit):
             remove_fmt_action = QAction("Remove Formatting", self)
             remove_fmt_action.triggered.connect(self.remove_formatting)
             menu.addAction(remove_fmt_action)
+            
+            convert_bullet_action = QAction("Convert to Bullet", self)
+            convert_bullet_action.triggered.connect(lambda: self.create_bullet_list(level=1))
+            menu.addAction(convert_bullet_action)
             
             insert_link_action = QAction("Insert Link...", self)
             insert_link_action.triggered.connect(self.prompt_insert_link)
@@ -649,7 +679,6 @@ class TodoApp(QMainWindow):
         self.setWindowTitle("To-Do Tracker")
         self.is_dark_mode = False
         
-        # Ensure json saves next to executable or script
         if getattr(sys, 'frozen', False):
             app_dir = os.path.dirname(sys.executable)
         else:
@@ -666,7 +695,6 @@ class TodoApp(QMainWindow):
         self.init_ui()
         self.load_data()
         
-        # Calculate exact width needed and trim excess padding
         header_width = self.todo_table.verticalHeader().width() if self.todo_table.verticalHeader().isVisible() else 30
         columns_width = sum(self.todo_table.columnWidth(i) for i in range(self.todo_table.columnCount()))
         
@@ -684,6 +712,7 @@ class TodoApp(QMainWindow):
         
         self.tabs.addTab(self.todo_tab, "To-Do")
         self.tabs.addTab(self.archive_tab, "Archive")
+        self.tabs.currentChanged.connect(lambda idx: self.refresh_visible_rows())
 
         self.setup_todo_tab()
         self.setup_archive_tab()
@@ -700,13 +729,13 @@ class TodoApp(QMainWindow):
         if is_archive:
             table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         else:
-            # Require double-click to edit/open calendar on date cells, preventing single-click header interference
             table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
 
         header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
-        
         header.sectionClicked.connect(lambda idx, t=table: self.on_header_clicked(t, idx))
+        
+        table.verticalScrollBar().valueChanged.connect(lambda val, t=table, arch=is_archive: self.on_table_scrolled(t, arch))
         
         table.setColumnWidth(0, 130) # Category
         table.setColumnWidth(1, 380) # Tasks/Subtasks
@@ -717,6 +746,12 @@ class TodoApp(QMainWindow):
         table.setColumnWidth(6, 350) # Updates/Comments
 
         return table
+
+    def on_table_scrolled(self, table, is_archive):
+        current_active_table = self.archive_table if is_archive else self.todo_table
+        if table != current_active_table:
+            return
+        self.refresh_visible_rows()
 
     def on_header_clicked(self, table, logicalIndex):
         if logicalIndex not in [3, 4]:
@@ -747,6 +782,8 @@ class TodoApp(QMainWindow):
         else:
             header.setSortIndicatorShown(False)
             table.sortItems(len(self.headers), Qt.AscendingOrder)
+            
+        self.refresh_visible_rows()
 
     def on_item_changed(self, item):
         self.refresh_row_style(item.row())
@@ -762,7 +799,6 @@ class TodoApp(QMainWindow):
         
         self.todo_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.todo_table.customContextMenuRequested.connect(self.open_context_menu)
-        
         self.todo_table.itemChanged.connect(self.on_item_changed)
         
         layout.addWidget(self.todo_table)
@@ -770,7 +806,6 @@ class TodoApp(QMainWindow):
         btn_layout = QHBoxLayout()
         btn_layout.setContentsMargins(10, 10, 10, 10)
         
-        # Left-aligned action buttons
         self.add_btn = QPushButton("+ Add New Task")
         self.add_btn.setStyleSheet("padding: 8px; font-weight: bold; background-color: #dcedc8; color: #000000;")
         self.add_btn.clicked.connect(lambda: self.add_row(self.todo_table, is_archive=False))
@@ -791,10 +826,8 @@ class TodoApp(QMainWindow):
         self.dark_mode_btn.clicked.connect(self.toggle_dark_mode)
         btn_layout.addWidget(self.dark_mode_btn)
 
-        # Stretch spacing to push Export and Backup buttons to far right
         btn_layout.addStretch()
 
-        # Right-aligned export and backup buttons
         self.export_btn = QPushButton("Export to CSV")
         self.export_btn.setStyleSheet("padding: 8px; font-weight: bold; background-color: #e1bee7; color: #000000;")
         self.export_btn.setFixedWidth(120)
@@ -813,16 +846,14 @@ class TodoApp(QMainWindow):
         layout = QVBoxLayout(self.archive_tab)
         layout.setContentsMargins(0, 0, 0, 0)
         self.archive_table = self.create_table(is_archive=True)
-        
         self.archive_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.archive_table.customContextMenuRequested.connect(self.open_context_menu)
-        
         layout.addWidget(self.archive_table)
 
     def toggle_dark_mode(self):
         self.is_dark_mode = not self.is_dark_mode
         self.apply_theme()
-        self.save_data()
+        QTimer.singleShot(0, self.save_data)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -839,7 +870,6 @@ class TodoApp(QMainWindow):
         scroll_thumb_color = "#555555" if self.is_dark_mode else "#c1c1c1"
         scroll_thumb_hover = "#777777" if self.is_dark_mode else "#a8a8a8"
 
-        # Tab specific colors for Light & Dark mode
         todo_tab_selected = "#2e6930" if self.is_dark_mode else "#c8e6c9"
         todo_tab_unselected = "#1b3e20" if self.is_dark_mode else "#e8f5e9"
         
@@ -848,7 +878,6 @@ class TodoApp(QMainWindow):
 
         tab_text = "#ffffff" if self.is_dark_mode else "#000000"
 
-        # 1. Update Windows Native Title Bar Theme (only when window is visible)
         if sys.platform == "win32" and hasattr(ctypes, "windll") and self.isVisible():
             try:
                 hwnd = int(self.winId())
@@ -859,7 +888,6 @@ class TodoApp(QMainWindow):
             except Exception:
                 pass
 
-        # 2. Main Window, Tab Widget, & Custom Tab Colors
         self.setStyleSheet(f"""
             QMainWindow, QWidget {{
                 background-color: {bg_color};
@@ -895,7 +923,6 @@ class TodoApp(QMainWindow):
             }}
         """)
 
-        # 3. Table & Thin Scrollbar Styling
         table_style = f"""
             QTableCornerButton::section {{
                 background-color: {header_color};
@@ -940,63 +967,45 @@ class TodoApp(QMainWindow):
             }}
         """
 
-        archive_style = f"""
-            QTableCornerButton::section {{
-                background-color: {archive_header};
-                border: 1px solid {grid_color};
-            }}
-            QHeaderView::section {{
-                background-color: {archive_header};
-                color: white;
-                font-weight: bold;
-                font-size: 13px;
-                border: 1px solid {grid_color};
-                padding: 6px;
-            }}
-            QTableWidget {{
-                background-color: {table_bg};
-                gridline-color: {grid_color};
-                font-size: 14px;
-                outline: 0;
-                border: none;
-            }}
-            QScrollBar:vertical {{
-                border: none;
-                background: transparent;
-                width: 6px;
-                margin: 2px 0px 2px 0px;
-            }}
-            QScrollBar::handle:vertical {{
-                background: {scroll_thumb_color};
-                min-height: 15px;
-                border-radius: 3px;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background: {scroll_thumb_hover};
-            }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-                border: none;
-                background: none;
-                height: 0px;
-            }}
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
-                background: none;
-            }}
-        """
-
         self.todo_table.setStyleSheet(table_style)
-        self.archive_table.setStyleSheet(archive_style)
+        self.archive_table.setStyleSheet(table_style)
 
-        # Force Qt style polish so headers render styled on startup
         for w in [self, self.todo_table, self.archive_table, self.todo_table.horizontalHeader(), self.archive_table.horizontalHeader()]:
             w.style().unpolish(w)
             w.style().polish(w)
 
-        # 4. Update row background, text, and link colors
-        for r in range(self.todo_table.rowCount()):
-            self.refresh_row_style(r)
-        for r in range(self.archive_table.rowCount()):
-            self.refresh_row_style(r, is_archive=True)
+        self.todo_table.setUpdatesEnabled(False)
+        self.archive_table.setUpdatesEnabled(False)
+        try:
+            for r in range(self.todo_table.rowCount()):
+                self.refresh_row_style(r)
+            for r in range(self.archive_table.rowCount()):
+                self.refresh_row_style(r, is_archive=True)
+        finally:
+            self.todo_table.setUpdatesEnabled(True)
+            self.archive_table.setUpdatesEnabled(True)
+
+    def refresh_visible_rows(self):
+        is_archive = (self.tabs.currentIndex() == 1)
+        table = self.archive_table if is_archive else self.todo_table
+        
+        if table.rowCount() == 0:
+            return
+
+        viewport_height = table.viewport().height()
+        top_row = table.rowAt(0)
+        bottom_row = table.rowAt(viewport_height)
+
+        if top_row == -1:
+            top_row = 0
+        if bottom_row == -1:
+            bottom_row = table.rowCount() - 1
+
+        start_row = max(0, top_row - 3)
+        end_row = min(table.rowCount() - 1, bottom_row + 3)
+
+        for r in range(start_row, end_row + 1):
+            self.refresh_row_style(r, is_archive=is_archive)
 
     def get_widget_row(self, table, widget):
         for r in range(table.rowCount()):
@@ -1018,6 +1027,7 @@ class TodoApp(QMainWindow):
             row_data = {col: "" for col in self.headers}
             row_data["Completed?"] = False
             row_data["row_height"] = 90
+            row_data["Date Assigned"] = QDate.currentDate().toString("yyyy-MM-dd")
             
         orig_order = row_data.get("_OriginalOrder", None)
         if orig_order is None:
@@ -1047,10 +1057,7 @@ class TodoApp(QMainWindow):
             
             elif header_name == "Completed?":
                 is_checked = row_data.get(header_name, False)
-                cb_widget = CenteredCheckBox(
-                    checked=is_checked, 
-                    read_only=is_archive
-                )
+                cb_widget = CenteredCheckBox(checked=is_checked, read_only=is_archive)
                 if not is_archive:
                     cb_widget.on_change_callback = lambda state, w=cb_widget, t=table: self.refresh_row_style(self.get_widget_row(t, w))
                     
@@ -1174,10 +1181,10 @@ class TodoApp(QMainWindow):
                             days_diff = today.daysTo(deadline_date)
 
                             if days_diff <= 0:
-                                cell_item.setForeground(QBrush(QColor("#ff6b6b" if self.is_dark_mode else "#D32F2F"))) # Red
+                                cell_item.setForeground(QBrush(QColor("#ff6b6b" if self.is_dark_mode else "#D32F2F")))
                                 font.setBold(True)
                             elif days_diff == 1:
-                                cell_item.setForeground(QBrush(QColor("#ffb74d" if self.is_dark_mode else "#FF8C00"))) # Amber/Orange
+                                cell_item.setForeground(QBrush(QColor("#ffb74d" if self.is_dark_mode else "#FF8C00")))
                                 font.setBold(True)
                             else:
                                 cell_item.setForeground(fg_brush)
